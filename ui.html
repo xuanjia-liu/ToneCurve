@@ -4295,6 +4295,7 @@
                     </button>
                     <button class="format-dropdown-option" data-format="variables">Variable</button>
                     <button class="format-dropdown-option" data-format="styles">Style</button>
+                    <button class="format-dropdown-option" data-format="css">CSS</button>
                 </div>
             </div>
             <!-- Auto-update Toggle as Icon Button -->
@@ -4311,6 +4312,7 @@
         <input type="radio" name="outputFormat" value="frames" checked style="display: none;">
         <input type="radio" name="outputFormat" value="styles" style="display: none;">
         <input type="radio" name="outputFormat" value="variables" style="display: none;">
+        <input type="radio" name="outputFormat" value="css" style="display: none;">
 
         <!-- Frame Details Dropdown (positioned absolutely) -->
         <div class="frame-details-dropdown" id="frameDetailsDropdown">
@@ -7077,6 +7079,11 @@
                 collectionInput.disabled = false;
                 groupInput.disabled = false;
             }
+            // CSS uses the Group name as the variable prefix; Collection isn't relevant.
+            else if (outputFormat === 'css') {
+                collectionInput.disabled = true;
+                groupInput.disabled = false;
+            }
         }
 
 
@@ -9632,6 +9639,52 @@
             currentScale.customNames = newCustomNames;
             currentScale.anchorSteps = newAnchorSteps;
         }
+        // Slugify a name into a valid CSS identifier fragment.
+        // "My Brand" -> "my-brand"; falls back to "color" if empty.
+        function slugifyForCss(name) {
+            const slug = String(name || '')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '');
+            return slug || 'color';
+        }
+
+        // Build a :root { --slug-step: #hex; } CSS block from the current colors.
+        function buildCssFromColors(scaleName, colors) {
+            const slug = slugifyForCss(scaleName);
+            const lines = colors.map(c => {
+                const stepKey = c.name ? slugifyForCss(c.name) : String(c.step);
+                return `  --${slug}-${stepKey}: ${c.hex.toLowerCase()};`;
+            });
+            return `:root {\n${lines.join('\n')}\n}\n`;
+        }
+
+        // Copy arbitrary text to the clipboard. Returns a promise that resolves on success.
+        function copyTextToClipboard(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                return navigator.clipboard.writeText(text);
+            }
+            return new Promise((resolve, reject) => {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    const ok = document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    if (ok) resolve(); else reject(new Error('execCommand returned false'));
+                } catch (err) {
+                    document.body.removeChild(textArea);
+                    reject(err);
+                }
+            });
+        }
+
         function generateOutput(type) {
             log('generateOutput called with type:', type);
             const colors = generateColorScale();
@@ -9639,6 +9692,21 @@
 
             log('Generated colors:', colors.length, 'colors');
             log('Scale name:', scaleName);
+
+            // CSS output is handled entirely client-side: build text, copy, toast.
+            // No postMessage to the Figma backend — there's no Figma artifact to create.
+            if (type === 'css') {
+                const cssText = buildCssFromColors(scaleName, colors);
+                copyTextToClipboard(cssText).then(() => {
+                    showToast(`Copied ${colors.length} CSS variables`, 'success');
+                }).catch((err) => {
+                    warn('CSS copy failed:', err);
+                    showToast('Failed to copy CSS to clipboard', 'error');
+                }).finally(() => {
+                    setGeneratePending(false);
+                });
+                return;
+            }
 
             const message = {
                 type: 'generate-palette',
@@ -9666,6 +9734,8 @@
             if (!liveEditingEnabled) return;
 
             const outputFormat = currentScale.outputFormat;
+            // CSS output is a one-shot clipboard copy; never auto-update it.
+            if (outputFormat === 'css') return;
             const scaleNameInput = document.getElementById('scaleName');
             const collectionNameInput = document.getElementById('variablesSectionName');
             let shouldGenerate = false;
