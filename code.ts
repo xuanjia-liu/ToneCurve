@@ -3,6 +3,10 @@
 // This plugin generates sophisticated color palettes with tone curve controls
 // and outputs them as frames, styles, or variables in Figma
 
+const DEBUG = false;
+// eslint-disable-next-line no-console
+const log = (...args: unknown[]): void => { if (DEBUG) console.log(...args); };
+
 interface ColorData {
   step: number;
   name?: string; // Custom name for the color, if provided
@@ -172,8 +176,22 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
       if (!paletteMsg.isAutoUpdate && notificationMessage) {
         figma.notify(notificationMessage);
       }
+      // Ack the UI so it can clear pending state and surface an in-plugin toast.
+      if (!paletteMsg.isAutoUpdate) {
+        figma.ui.postMessage({
+          type: 'generate-complete',
+          data: { message: notificationMessage || 'Done', error: false }
+        });
+      }
     } catch (error) {
-      figma.notify(`Error generating palette: ${error instanceof Error ? error.message : 'Unknown error'}`, { error: true });
+      const errMsg = `Error generating palette: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      figma.notify(errMsg, { error: true });
+      if (!(msg as PaletteMessage).isAutoUpdate) {
+        figma.ui.postMessage({
+          type: 'generate-complete',
+          data: { message: errMsg, error: true }
+        });
+      }
     }
   } else if (msg.type === 'load-color-history') {
     // Load color history from client storage
@@ -232,6 +250,10 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
         });
       } else {
         figma.notify('No color found in selected element', { error: true });
+        figma.ui.postMessage({
+          type: 'selection-extraction-empty',
+          data: { message: 'No color found in selected element' }
+        });
       }
     } catch (error) {
       figma.notify(`Error extracting color: ${error instanceof Error ? error.message : 'Unknown error'}`, { error: true });
@@ -247,6 +269,10 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
         });
       } else {
         figma.notify('No colors found in selected element(s)', { error: true });
+        figma.ui.postMessage({
+          type: 'selection-extraction-empty',
+          data: { message: 'No colors found in selected element(s)' }
+        });
       }
     } catch (error) {
       figma.notify(`Error extracting colors: ${error instanceof Error ? error.message : 'Unknown error'}`, { error: true });
@@ -313,7 +339,7 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
         }
       } catch (cacheError) {
         // Cache read failed, continue with normal processing
-        console.log('Cache read failed, processing variables');
+        log('Cache read failed, processing variables');
       }
 
       const collectionsPayload = collections.map(c => ({ id: c.id, name: c.name }));
@@ -549,7 +575,7 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
         await figma.clientStorage.setAsync(cacheValidationKey, currentValidation);
       } catch (cacheError) {
         // Cache write failed, but continue (non-critical)
-        console.log('Cache write failed:', cacheError);
+        log('Cache write failed:', cacheError);
       }
 
       figma.ui.postMessage({
@@ -568,13 +594,13 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
     }
   } else if (msg.type === 'load-styles-metadata') {
     try {
-      console.log('Loading styles metadata...');
+      log('Loading styles metadata...');
       const styles = await figma.getLocalPaintStylesAsync();
-      console.log(`Found ${styles.length} total paint styles`);
+      log(`Found ${styles.length} total paint styles`);
 
       // Early exit if no styles
       if (styles.length === 0) {
-        console.log('No styles found, sending empty response');
+        log('No styles found, sending empty response');
         figma.ui.postMessage({
           type: 'styles-metadata-loaded',
           stylesByGroup: {}
@@ -583,7 +609,7 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
       }
 
       // Log first few style names and types for debugging
-      console.log('Sample styles:', styles.slice(0, 5).map(s => ({
+      log('Sample styles:', styles.slice(0, 5).map(s => ({
         name: s.name,
         paintCount: s.paints.length,
         firstPaintType: s.paints[0]?.type
@@ -655,16 +681,16 @@ figma.ui.onmessage = async (msg: PaletteMessage | ColorHistoryMessage | SavedPal
       }
 
       // Log for debugging
-      console.log(`Processed ${processedCount} styles, skipped ${skippedCount} non-solid styles`);
-      console.log('Sending styles-metadata-loaded message with groups:', Object.keys(stylesByGroup).length);
-      console.log('Sample groups:', Object.keys(stylesByGroup).slice(0, 3));
+      log(`Processed ${processedCount} styles, skipped ${skippedCount} non-solid styles`);
+      log('Sending styles-metadata-loaded message with groups:', Object.keys(stylesByGroup).length);
+      log('Sample groups:', Object.keys(stylesByGroup).slice(0, 3));
 
       figma.ui.postMessage({
         type: 'styles-metadata-loaded',
         stylesByGroup: stylesByGroup
       });
 
-      console.log('Message sent successfully');
+      log('Message sent successfully');
     } catch (error) {
       console.error('Error loading styles metadata:', error);
       figma.ui.postMessage({

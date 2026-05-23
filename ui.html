@@ -838,6 +838,54 @@
             cursor: not-allowed;
         }
 
+        /* Toast system */
+        .toast-container {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            pointer-events: none;
+            max-width: calc(100% - 32px);
+        }
+
+        .toast {
+            background: var(--text-color);
+            color: var(--surface-color);
+            padding: 8px 14px;
+            border-radius: var(--border-radius-md);
+            font-size: 12px;
+            line-height: 1.4;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+            opacity: 0;
+            transform: translateY(8px);
+            transition: opacity 0.18s ease, transform 0.18s ease;
+            pointer-events: auto;
+            max-width: 360px;
+            text-align: center;
+        }
+
+        .toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .toast.toast-success { background: #10b981; color: #fff; }
+        .toast.toast-error   { background: #ef4444; color: #fff; }
+        .toast.toast-info    { background: #3b82f6; color: #fff; }
+
+        /* Pending state for generate button */
+        .generate-btn-main.is-pending {
+            opacity: 0.7;
+            cursor: progress;
+        }
+        .generate-btn-main.is-pending #generateBtnText::after {
+            content: '…';
+        }
+
         .variable-collection-item {
             padding: 12px;
             border-bottom: 1px solid var(--border-color);
@@ -4089,6 +4137,9 @@
                 </div>
             </div>
         </div>
+        <!-- Toast container -->
+        <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
         <!-- Right Panel -->
         <div class="right-panel">
 
@@ -4292,6 +4343,75 @@
     <div id="paletteTooltip"></div>
     <div id="resizeHandle" class="resize-handle" title="Resize"></div>
     <script>
+        // Debug logger: console output is suppressed unless DEBUG is true.
+        // Use console.error directly for actual error conditions that should always surface.
+        const DEBUG = false;
+        const log = (...args) => { if (DEBUG) console.log(...args); };
+        const warn = (...args) => { if (DEBUG) console.warn(...args); };
+
+        // Show a transient toast notification inside the plugin UI.
+        // type: 'info' | 'success' | 'error' (default: 'info'). duration: ms (default 2400).
+        function showToast(message, type = 'info', duration = 2400) {
+            const container = document.getElementById('toastContainer');
+            if (!container) return;
+            const el = document.createElement('div');
+            el.className = `toast toast-${type}`;
+            el.textContent = message;
+            container.appendChild(el);
+            // Force reflow before adding the visible class so the transition runs.
+            void el.offsetWidth;
+            el.classList.add('visible');
+            setTimeout(() => {
+                el.classList.remove('visible');
+                setTimeout(() => {
+                    if (el.parentNode) el.parentNode.removeChild(el);
+                }, 220);
+            }, duration);
+        }
+
+        // Generate button pending state (with safety timeout in case the backend
+        // doesn't reply — e.g. older Figma builds, errors). The backend posts a
+        // 'generate-complete' message that clears the state earlier.
+        let generatePendingTimer = null;
+        function setGeneratePending(isPending) {
+            const btn = document.getElementById('generateOutputBtn');
+            if (!btn) return;
+            if (isPending) {
+                btn.classList.add('is-pending');
+                btn.disabled = true;
+                if (generatePendingTimer) clearTimeout(generatePendingTimer);
+                // Safety timeout — backend should ack within 3s.
+                generatePendingTimer = setTimeout(() => setGeneratePending(false), 3500);
+            } else {
+                btn.classList.remove('is-pending');
+                btn.disabled = false;
+                if (generatePendingTimer) {
+                    clearTimeout(generatePendingTimer);
+                    generatePendingTimer = null;
+                }
+            }
+        }
+
+        // Trailing debounce: collapses bursts of keystrokes into a single delayed call.
+        function debounce(fn, delay) {
+            let timer = null;
+            const debounced = (...args) => {
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(() => {
+                    timer = null;
+                    fn(...args);
+                }, delay);
+            };
+            debounced.flush = () => {
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                    fn();
+                }
+            };
+            return debounced;
+        }
+
         // Global state
         let currentScale = {
             name: 'primary',
@@ -4696,6 +4816,17 @@
             // Initialize resize handle
             initializeResizeHandle();
         });
+        // Debounced heavy-update helpers shared across text inputs.
+        // State is updated immediately; only the visual recomputation +
+        // history checkpoint are deferred so fast typing doesn't thrash.
+        const debouncedUpdateVisuals = debounce(() => {
+            updateAllVisuals();
+            saveStateToHistory();
+        }, 250);
+        const debouncedSyncPaletteNames = debounce(() => {
+            syncPaletteNames();
+        }, 200);
+
         function initializeEventListeners() {
             // Scale name input - track manual changes
             const scaleNameInput = document.getElementById('scaleName');
@@ -4704,10 +4835,11 @@
                     currentScale.isAutoNamed = false;
                     currentScale.name = e.target.value;
                     updateAutoNameButtonState();
-                    syncPaletteNames(); // Sync with compare cards
+                    debouncedSyncPaletteNames(); // Sync with compare cards (debounced)
                 });
 
                 scaleNameInput.addEventListener('blur', () => {
+                    debouncedSyncPaletteNames.flush();
                     saveStateToHistory();
                 });
             }
@@ -4723,8 +4855,7 @@
                 const value = parseInt(e.target.value);
                 if (value >= 1 && value <= 20) {
                     currentScale.customSteps = value;
-                    updateAllVisuals();
-                    saveStateToHistory();
+                    debouncedUpdateVisuals();
                 }
             });
 
@@ -4770,8 +4901,7 @@
                 const value = parseInt(e.target.value);
                 if (value >= 1 && value <= 200) {
                     currentScale.namingPattern.step = value;
-                    updateAllVisuals();
-                    saveStateToHistory();
+                    debouncedUpdateVisuals();
                 }
             });
 
@@ -4779,8 +4909,7 @@
                 const value = parseInt(e.target.value);
                 if (value >= 0 && value <= 1000) {
                     currentScale.namingPattern.start = value;
-                    updateAllVisuals();
-                    saveStateToHistory();
+                    debouncedUpdateVisuals();
                 }
             });
 
@@ -5375,7 +5504,8 @@
             document.getElementById('generateOutputBtn').addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log('Generate button clicked, format:', currentScale.outputFormat);
+                log('Generate button clicked, format:', currentScale.outputFormat);
+                setGeneratePending(true);
                 generateOutput(currentScale.outputFormat);
             });
 
@@ -7501,7 +7631,7 @@
                         navigator.clipboard.writeText(color.hex).then(() => {
                             showCopyFeedback(swatch, 'Copied!');
                         }).catch((err) => {
-                            console.warn('Clipboard API failed, using fallback:', err);
+                            warn('Clipboard API failed, using fallback:', err);
                             fallbackCopyToClipboard(color.hex, swatch);
                         });
                     } else {
@@ -8085,9 +8215,13 @@
                 const input = document.getElementById('textColorInput');
                 if (!input) return;
                 const colors = parseColorsFromText(input.value);
-                if (colors.length === 0) return;
+                if (colors.length === 0) {
+                    showToast('No colors found in text', 'error');
+                    return;
+                }
                 createPaletteFromTextColors(colors);
                 closeTextColorModal();
+                showToast(`Added palette with ${colors.length} color${colors.length > 1 ? 's' : ''}`, 'success');
             });
         }
         const textColorOverlayEl = document.getElementById('textColorOverlay');
@@ -8124,7 +8258,7 @@
                     container.innerHTML = '<div class="variable-empty-state">Loading styles...</div>';
                 }
                 // Load styles metadata
-                console.log('Requesting styles metadata...');
+                log('Requesting styles metadata...');
                 parent.postMessage({ pluginMessage: { type: 'load-styles-metadata' } }, '*');
                 // Render immediately with current data (will be updated when data arrives)
                 renderStyleGroupsList();
@@ -8149,26 +8283,26 @@
 
             container.innerHTML = '';
 
-            console.log('renderStyleGroupsList called, stylesMetadata:', stylesMetadata);
+            log('renderStyleGroupsList called, stylesMetadata:', stylesMetadata);
 
             // Check if we have styles metadata
             if (!stylesMetadata) {
-                console.warn('stylesMetadata is null/undefined');
+                warn('stylesMetadata is null/undefined');
                 container.innerHTML = '<div class="variable-empty-state">Loading styles...</div>';
                 return;
             }
 
             if (!stylesMetadata.stylesByGroup) {
-                console.warn('stylesMetadata.stylesByGroup is missing');
+                warn('stylesMetadata.stylesByGroup is missing');
                 container.innerHTML = '<div class="variable-empty-state">No paint styles found.<br>Create some color styles in Figma first.</div>';
                 return;
             }
 
             const groupKeys = Object.keys(stylesMetadata.stylesByGroup);
-            console.log('Number of style groups:', groupKeys.length);
+            log('Number of style groups:', groupKeys.length);
 
             if (groupKeys.length === 0) {
-                console.warn('No style groups found');
+                warn('No style groups found');
                 container.innerHTML = '<div class="variable-empty-state">No paint styles found.<br>Create some color styles in Figma first.</div>';
                 return;
             }
@@ -8734,7 +8868,7 @@
                             navigator.clipboard.writeText(color.hex).then(() => {
                                 showCopyFeedback(swatch, 'Copied!');
                             }).catch((err) => {
-                                console.warn('Clipboard API failed, using fallback:', err);
+                                warn('Clipboard API failed, using fallback:', err);
                                 fallbackCopyToClipboard(color.hex, swatch);
                             });
                         } else {
@@ -9499,12 +9633,12 @@
             currentScale.anchorSteps = newAnchorSteps;
         }
         function generateOutput(type) {
-            console.log('generateOutput called with type:', type);
+            log('generateOutput called with type:', type);
             const colors = generateColorScale();
             const scaleName = document.getElementById('scaleName').value || 'primary';
 
-            console.log('Generated colors:', colors.length, 'colors');
-            console.log('Scale name:', scaleName);
+            log('Generated colors:', colors.length, 'colors');
+            log('Scale name:', scaleName);
 
             const message = {
                 type: 'generate-palette',
@@ -9516,7 +9650,7 @@
             // Add frame options if outputting frames
             if (type === 'frames') {
                 message.frameOptions = currentScale.frameOptions;
-                console.log('Frame options:', message.frameOptions);
+                log('Frame options:', message.frameOptions);
             }
 
             // Add variables collection name if outputting variables
@@ -9524,7 +9658,7 @@
                 message.variablesCollectionName = document.getElementById('variablesSectionName').value || 'Colors';
             }
 
-            console.log('Sending message to plugin:', message);
+            log('Sending message to plugin:', message);
             parent.postMessage({ pluginMessage: message }, '*');
         }
         // Execute auto-update immediately (used when auto-update is first enabled)
@@ -10478,7 +10612,7 @@
                 updateColorFromMouse(e);
             });
 
-            document.addEventListener('mousemove', (e) => {
+            const handleDocMouseMove = (e) => {
                 if (isDraggingModal) {
                     let newLeft = e.clientX - modalOffsetX;
                     let newTop = e.clientY - modalOffsetY;
@@ -10498,9 +10632,9 @@
                 } else if (isDraggingSquare) {
                     updateColorFromMouse(e);
                 }
-            });
+            };
 
-            document.addEventListener('mouseup', () => {
+            const handleDocMouseUp = () => {
                 if (isDraggingModal) {
                     isDraggingModal = false;
                     modal.style.cursor = ''; // Reset to CSS default
@@ -10513,7 +10647,10 @@
                     colorSquareHandle.classList.remove('dragging');
                     isDraggingSquare = false;
                 }
-            });
+            };
+
+            document.addEventListener('mousemove', handleDocMouseMove);
+            document.addEventListener('mouseup', handleDocMouseUp);
 
             function updateHueFromMouse(e) {
                 const rect = hueSlider.getBoundingClientRect();
@@ -10576,7 +10713,16 @@
                 document.body.classList.remove('color-edit-modal-active');
                 // Clean up modal reference
                 window.currentColorModal = null;
-                document.body.removeChild(overlay);
+                // Remove document-level listeners to prevent leaks across reopens
+                document.removeEventListener('mousemove', handleDocMouseMove);
+                document.removeEventListener('mouseup', handleDocMouseUp);
+                // Reset drag flags so stale state doesn't survive
+                isDraggingModal = false;
+                isDraggingHue = false;
+                isDraggingSquare = false;
+                if (overlay.parentNode) {
+                    document.body.removeChild(overlay);
+                }
             };
 
             // Add hover effects for close button
@@ -11047,12 +11193,19 @@
 
             // Debug: log all incoming messages
             if (type === 'styles-metadata-loaded') {
-                console.log('=== STYLES MESSAGE RECEIVED ===');
-                console.log('Full event.data.pluginMessage:', event.data.pluginMessage);
-                console.log('Extracted stylesByGroup:', stylesByGroup);
+                log('=== STYLES MESSAGE RECEIVED ===');
+                log('Full event.data.pluginMessage:', event.data.pluginMessage);
+                log('Extracted stylesByGroup:', stylesByGroup);
             }
 
-            if (type === 'color-history-loaded') {
+            if (type === 'generate-complete') {
+                setGeneratePending(false);
+                if (data && data.message) {
+                    showToast(data.message, data.error ? 'error' : 'success');
+                }
+            } else if (type === 'selection-extraction-empty') {
+                showToast(data && data.message ? data.message : 'No colors found in selection', 'error');
+            } else if (type === 'color-history-loaded') {
                 colorHistory = data || [];
                 renderColorHistory();
             } else if (type === 'selected-color-extracted') {
@@ -11161,16 +11314,16 @@
             } else if (type === 'styles-metadata-loaded') {
                 try {
                     // Update stylesMetadata for the modal
-                    console.log('=== HANDLING styles-metadata-loaded ===');
-                    console.log('Received styles-metadata-loaded, stylesByGroup:', stylesByGroup);
-                    console.log('stylesByGroup type:', typeof stylesByGroup);
-                    console.log('stylesByGroup is array?', Array.isArray(stylesByGroup));
-                    console.log('stylesByGroup keys:', stylesByGroup ? Object.keys(stylesByGroup) : 'null/undefined');
-                    console.log('Number of groups:', stylesByGroup ? Object.keys(stylesByGroup).length : 0);
+                    log('=== HANDLING styles-metadata-loaded ===');
+                    log('Received styles-metadata-loaded, stylesByGroup:', stylesByGroup);
+                    log('stylesByGroup type:', typeof stylesByGroup);
+                    log('stylesByGroup is array?', Array.isArray(stylesByGroup));
+                    log('stylesByGroup keys:', stylesByGroup ? Object.keys(stylesByGroup) : 'null/undefined');
+                    log('Number of groups:', stylesByGroup ? Object.keys(stylesByGroup).length : 0);
 
                     // Ensure stylesMetadata exists (should be initialized earlier)
                     if (typeof stylesMetadata === 'undefined') {
-                        console.warn('stylesMetadata not initialized, initializing now...');
+                        warn('stylesMetadata not initialized, initializing now...');
                         stylesMetadata = { stylesByGroup: {} };
                     }
 
@@ -11178,16 +11331,16 @@
                         stylesByGroup: stylesByGroup || {}
                     };
 
-                    console.log('Updated stylesMetadata, groups:', Object.keys(stylesMetadata.stylesByGroup));
-                    console.log('stylesMetadata.stylesByGroup:', stylesMetadata.stylesByGroup);
+                    log('Updated stylesMetadata, groups:', Object.keys(stylesMetadata.stylesByGroup));
+                    log('stylesMetadata.stylesByGroup:', stylesMetadata.stylesByGroup);
 
                     // Re-render the style groups list if the modal is visible
                     const styleModal = document.getElementById('styleSelectionOverlay');
                     if (styleModal && styleModal.classList.contains('visible')) {
-                        console.log('Modal is visible, re-rendering style groups list...');
+                        log('Modal is visible, re-rendering style groups list...');
                         renderStyleGroupsList();
                     } else {
-                        console.log('Modal is not visible, skipping render');
+                        log('Modal is not visible, skipping render');
                     }
                 } catch (error) {
                     console.error('Error in styles-metadata-loaded handler:', error);
