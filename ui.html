@@ -1593,6 +1593,27 @@
             opacity: 0.7;
         }
 
+        /* --- Manual mode: thin solid sliders (avoid looking inactive) --- */
+        #manualWrapper .slider-track {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+        }
+
+        #manualWrapper .slider-gradient {
+            top: 50%;
+            height: 6px;
+            transform: translateY(-50%);
+            border-radius: var(--border-radius-md);
+            box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+        }
+
+        /* Manual sliders stay active-looking even when swatches are customized */
+        #manualWrapper .slider-gradient.customized {
+            filter: none;
+            opacity: 1;
+        }
+
         /* Grey out easing and graph sections when swatches are customized */
         .bezier-editor.customized {
             filter: grayscale(0.8) brightness(0.6);
@@ -3271,6 +3292,59 @@
             flex-direction: column;
             gap: 10px;
             width: 100%;
+            position: relative;
+        }
+
+        /* Dim the picker controls while Manual mode is active */
+        .base-color-picker-inline.masked > *:not(.base-color-picker-mask) {
+            opacity: 0.4;
+            filter: grayscale(0.7);
+            pointer-events: none;
+            user-select: none;
+        }
+
+        .base-color-picker-mask {
+            position: absolute;
+            inset: -6px;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            z-index: 5;
+            background: rgba(247, 247, 248, 0.35);
+            backdrop-filter: blur(1px);
+            border-radius: var(--border-radius-md);
+        }
+
+        .base-color-picker-inline.masked .base-color-picker-mask {
+            display: flex;
+        }
+
+        .reactivate-curve-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 14px;
+            font-family: var(--font-family);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--surface-color);
+            background: var(--primary-color);
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            box-shadow: var(--shadow);
+            transition: background 0.15s ease;
+        }
+
+        .reactivate-curve-btn:hover {
+            background: var(--primary-color-hover);
+        }
+
+        .reactivate-curve-btn svg {
+            width: 14px;
+            height: 14px;
         }
 
         .canvas-container-inline {
@@ -3756,6 +3830,18 @@
                                 <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
                                 <path d="M3 21v-5h5"></path>
                             </svg>
+                        </button>
+                    </div>
+
+                    <!-- Overlay shown while Manual mode is active -->
+                    <div id="baseColorPickerMask" class="base-color-picker-mask">
+                        <button id="reactivateCurveBtn" class="reactivate-curve-btn"
+                            title="Switch back to Curve mode to edit the base color">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M3 17c6 0 6-10 12-10 3 0 5 2 6 3"></path>
+                            </svg>
+                            Use Curve
                         </button>
                     </div>
                 </div>
@@ -5186,7 +5272,7 @@
                     return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
                 }
 
-                function updateUI(updateColorScale = true) {
+                function updateUI(updateColorScale = true, recordHistory = true) {
                     // Update preview
                     const hex = hslToHex(currentColor[0], currentColor[1], currentColor[2]);
                     colorPreview.style.background = hex;
@@ -5211,11 +5297,11 @@
 
                     // Update main color when requested
                     if (updateColorScale) {
-                        updateBaseColor(hex);
+                        updateBaseColor(hex, recordHistory);
                     }
                 }
 
-                function updateBaseColor(hex) {
+                function updateBaseColor(hex, recordHistory = true) {
                     currentScale.baseColor = hex;
                     updateColorInput();
 
@@ -5232,7 +5318,12 @@
                     currentScale.oklch.h = { start: oklchH, end: oklchH + 3 };
 
                     updateAllVisuals();
-                    saveStateToHistory();
+                    // Only checkpoint history when requested. During a slider drag we
+                    // update live but defer the single checkpoint to mouseup, so one
+                    // drag == one undo step (instead of flooding history per mousemove).
+                    if (recordHistory) {
+                        saveStateToHistory();
+                    }
                 }
 
                 // Color square interactions
@@ -5253,6 +5344,8 @@
                         isDraggingSquare = false;
                         colorSquareHandle.classList.remove('dragging');
                         addToColorHistory(hslToHex(currentColor[0], currentColor[1], currentColor[2]));
+                        // Checkpoint the whole drag as a single undo step.
+                        saveStateToHistory();
                     }
                 });
 
@@ -5269,7 +5362,8 @@
                     currentColor[1] = saturation;
                     currentColor[2] = lightness;
                     window.baseColorPickerState.currentColor = currentColor;
-                    updateUI();
+                    // Live update only; history is checkpointed on mouseup.
+                    updateUI(true, false);
                 }
 
                 // Hue slider interactions
@@ -5290,6 +5384,8 @@
                         isDraggingHue = false;
                         hueHandle.classList.remove('dragging');
                         addToColorHistory(hslToHex(currentColor[0], currentColor[1], currentColor[2]));
+                        // Checkpoint the whole drag as a single undo step.
+                        saveStateToHistory();
                     }
                 });
 
@@ -5301,7 +5397,8 @@
                     currentColor[0] = (x / width) * 360;
                     window.baseColorPickerState.currentColor = currentColor;
                     drawColorSquare();
-                    updateUI();
+                    // Live update only; history is checkpointed on mouseup.
+                    updateUI(true, false);
                 }
 
                 // Initialize the picker with current color
@@ -5411,7 +5508,8 @@
                     updateManualLabels();
                     updateManualGradientsAndHandles();
                     updatePalettePreview();
-                    saveStateToHistory();
+                    // NOTE: history is checkpointed on mouseup (drag end), not here,
+                    // so a full drag records only the final value (not the start).
                 }
                 tracks.forEach(t => {
                     const trackEl = wrapper.querySelector(t.sel);
@@ -5434,7 +5532,13 @@
                     updateManualGradientsAndHandles();
                     updatePalettePreview();
                 });
-                document.addEventListener('mouseup', () => { dragging = null; });
+                document.addEventListener('mouseup', () => {
+                    if (dragging) {
+                        dragging = null;
+                        // Checkpoint the final dragged (or clicked) value.
+                        saveStateToHistory();
+                    }
+                });
             }
             initializeManualControls();
             updateManualLabels();
@@ -5445,6 +5549,13 @@
 
             // Reset button
             document.getElementById('resetBtn').addEventListener('click', resetToDefaults);
+
+            // "Use Curve" button on the Manual-mode mask: return to Curve mode so the
+            // base color picker becomes active/editable again.
+            const reactivateCurveBtn = document.getElementById('reactivateCurveBtn');
+            if (reactivateCurveBtn) {
+                reactivateCurveBtn.addEventListener('click', resetToDefaults);
+            }
 
             // Presets button and dropdown
             document.getElementById('presetsBtn').addEventListener('click', (e) => {
@@ -5482,6 +5593,7 @@
                 radio.addEventListener('change', (e) => {
                     currentScale.outputFormat = e.target.value;
                     updateOutputOptionsVisibility();
+                    saveStateToHistory();
                 });
             });
 
@@ -5499,6 +5611,7 @@
 
                     // Trigger auto-update if enabled
                     generateOutputIfAutoUpdateEnabled();
+                    saveStateToHistory();
                 });
             });
 
@@ -5560,6 +5673,7 @@
 
                     // Update output options visibility (for Collection/Name input states)
                     updateOutputOptionsVisibility();
+                    saveStateToHistory();
 
                     // Close dropdown (edit button is now inside Frame option, always visible)
                     generateFormatDropdown.classList.remove('active');
@@ -5617,6 +5731,9 @@
                 collectionInput.addEventListener('blur', () => {
                     // Delay close to allow click selection
                     setTimeout(() => closeSuggestionPanel('collection'), 150);
+                    // variablesSectionName is captured in snapshots; checkpoint on blur
+                    // so editing it alone is undoable.
+                    saveStateToHistory();
                 });
             }
             if (groupInput) {
@@ -6502,7 +6619,12 @@
                         if (newEnd < 0) newEnd += 360;
                         setHueRange(newStart, newEnd);
                     }
-                    // Lightweight update for drag
+                    // Throttle the visual rebuild to ~60fps (state is already updated
+                    // above every move; mouseup does a final full update).
+                    const now = Date.now();
+                    if (now - lastDragUpdate < 16) return;
+                    lastDragUpdate = now;
+                    // Lightweight update for drag (now also live-updates swatches)
                     updateDragVisuals();
                 });
                 window.addEventListener('mouseup', () => {
@@ -6982,9 +7104,17 @@
             saveStateToHistory();
         }
 
+        // Mask the base color picker while Manual mode is active
+        function updateBaseColorPickerMask() {
+            const panel = document.getElementById('baseColorPickerPanel');
+            if (!panel) return;
+            panel.classList.toggle('masked', !!currentScale.manualModeActive);
+        }
+
         function updateAllVisuals() {
             // Update toggle button state first
             updateNamingOrderToggle();
+            updateBaseColorPickerMask();
 
             if (currentScale.mode === 'properties') {
                 updateSliderVisuals();
@@ -7042,6 +7172,11 @@
 
             // Update slider visual feedback immediately when custom colors are cleared
             updateSliderVisualFeedback();
+
+            // Live-update the swatch colors while dragging (like the base color
+            // picker), instead of only refreshing them on mouse release. Callers
+            // throttle this to ~60fps to keep dragging smooth.
+            updatePalettePreview();
         }
 
 
@@ -7111,27 +7246,15 @@
         function updateManualGradientsAndHandles() {
             const wrapper = document.getElementById('manualWrapper');
             if (!wrapper) return;
-            // Build gradients roughly matching other tabs using current base color as reference
-            const baseHsl = hexToHsl(currentScale.baseColor);
-            // Hue gradient (full spectrum)
+            // Thin solid sliders using the primary UI color
+            const solidColor = getComputedStyle(document.documentElement)
+                .getPropertyValue('--primary-color').trim() || '#242424';
             const hueGrad = wrapper.querySelector('#manual-hue-gradient');
-            if (hueGrad) {
-                const stops = [];
-                for (let i = 0; i <= 10; i++) { const h = (i / 10) * 360; stops.push(hslToHex(h, baseHsl[1], baseHsl[2])); }
-                hueGrad.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
-            }
-            // Sat gradient 0..100 at base hue/lightness
+            if (hueGrad) { hueGrad.style.background = solidColor; }
             const satGrad = wrapper.querySelector('#manual-sat-gradient');
-            if (satGrad) {
-                const stops = []; for (let i = 0; i <= 10; i++) { const s = (i / 10) * 100; stops.push(hslToHex(baseHsl[0], s, baseHsl[2])); }
-                satGrad.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
-            }
-            // Lightness gradient dark->light at base hue/sat
+            if (satGrad) { satGrad.style.background = solidColor; }
             const lightGrad = wrapper.querySelector('#manual-light-gradient');
-            if (lightGrad) {
-                const stops = []; for (let i = 0; i <= 10; i++) { const l = i / 10 * 100; stops.push(hslToHex(baseHsl[0], baseHsl[1], l)); }
-                lightGrad.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
-            }
+            if (lightGrad) { lightGrad.style.background = solidColor; }
             // Handle positions map delta to 0..1
             const setHandle = (id, min, max, value) => {
                 const handle = wrapper.querySelector(id);
@@ -7845,6 +7968,8 @@
 
             // Finally update plugin width
             updatePluginWidth();
+
+            saveStateToHistory();
         }
 
         function copyCompareCard(paletteId) {
@@ -7869,6 +7994,8 @@
             renderComparePalettes();
             updateAllComparePreviews();
             updatePluginWidth();
+
+            saveStateToHistory();
         }
 
         // Create palette from selected node colors
@@ -8047,6 +8174,8 @@
             renderComparePalettes();
             updateAllComparePreviews();
             updatePluginWidth();
+
+            saveStateToHistory();
         }
 
         // ===== Text Color Modal =====
@@ -8201,6 +8330,8 @@
             renderComparePalettes();
             updateAllComparePreviews();
             updatePluginWidth();
+
+            saveStateToHistory();
         }
 
         // Wire up text color modal
@@ -8422,6 +8553,8 @@
             renderComparePalettes();
             updateAllComparePreviews();
             updatePluginWidth();
+
+            saveStateToHistory();
         }
 
         // Handle style modal close button
@@ -8456,6 +8589,8 @@
 
             renderComparePalettes();
             updatePluginWidth();
+
+            saveStateToHistory();
         }
 
         function setActivePalette(paletteId) {
@@ -8480,6 +8615,11 @@
             }
 
             renderComparePalettes();
+
+            // Record the active-palette switch. Guarded by isApplyingHistory (no-op
+            // during undo/redo) and de-duplicated, so the extra saves that
+            // add/copy/delete perform right after this collapse into one entry.
+            saveStateToHistory();
         }
         function updateAllControlsFromScale() {
             // Update all UI controls to match the current scale
@@ -9225,6 +9365,8 @@
             document.getElementById('slidersWrapper').classList.add('hidden');
             document.getElementById('advancedWrapper').classList.add('hidden');
             document.getElementById('oklchWrapper').classList.add('hidden');
+            // Mask the base color picker while in Manual mode
+            if (typeof updateBaseColorPickerMask === 'function') updateBaseColorPickerMask();
             // Ensure manual handles are positioned correctly on first entry
             if (typeof updateManualGradientsAndHandles === 'function') {
                 updateManualGradientsAndHandles();
@@ -10942,8 +11084,21 @@
 
         // Create a deep copy of the current state for history
         function createStateSnapshot() {
+            // Capture the FULL compare-palettes state so add / remove / copy /
+            // per-card swatch edits in the palette-preview-container are undoable.
+            // currentScale is the active palette's scale (by reference), so it is
+            // captured inside `comparePalettes.palettes` below.
             return JSON.parse(JSON.stringify({
-                ...currentScale,
+                comparePalettes: {
+                    palettes: comparePalettes.palettes.map(p => ({
+                        id: p.id,
+                        title: p.title,
+                        isActive: p.isActive,
+                        scale: p.scale
+                    })),
+                    activeId: comparePalettes.activeId,
+                    nextId: comparePalettes.nextId
+                },
                 // Include UI state for complete restoration
                 scaleName: document.getElementById('scaleName').value,
                 variablesSectionName: document.getElementById('variablesSectionName').value
@@ -10955,6 +11110,15 @@
             if (isApplyingHistory) return; // Don't save during undo/redo operations
 
             const snapshot = createStateSnapshot();
+
+            // Skip if the new snapshot is identical to the current state.
+            // Many code paths (e.g. blur handlers) call this even when nothing
+            // changed; without this guard the stack fills with duplicate entries
+            // and the user has to press Undo multiple times to see any change.
+            if (historyIndex >= 0 &&
+                JSON.stringify(snapshot) === JSON.stringify(historyStack[historyIndex])) {
+                return;
+            }
 
             // Remove any states after current index (when we're in the middle of history)
             if (historyIndex < historyStack.length - 1) {
@@ -10979,16 +11143,46 @@
             isApplyingHistory = true;
 
             try {
-                // Restore the main state
-                currentScale = JSON.parse(JSON.stringify(snapshot));
+                if (snapshot.comparePalettes && Array.isArray(snapshot.comparePalettes.palettes)) {
+                    // New format: rebuild the entire compare-palettes state.
+                    // Deep copy so future edits don't mutate the stored history entry.
+                    const restored = JSON.parse(JSON.stringify(snapshot.comparePalettes));
+                    comparePalettes.palettes = restored.palettes;
+                    comparePalettes.activeId = restored.activeId;
+                    comparePalettes.nextId = restored.nextId;
 
-                // Remove UI-specific properties from currentScale
+                    // Re-point currentScale to the ACTIVE palette's scale BY REFERENCE
+                    // (not a detached copy) so edits and compare-card rendering stay linked.
+                    let active = comparePalettes.palettes.find(p => p.isActive);
+                    if (!active) {
+                        active = comparePalettes.palettes.find(p => p.id === comparePalettes.activeId)
+                            || comparePalettes.palettes[0];
+                        if (active) active.isActive = true;
+                    }
+                    currentScale = active.scale;
+                } else {
+                    // Backward-compat: old scale-only snapshot format.
+                    currentScale = JSON.parse(JSON.stringify(snapshot));
+                    delete currentScale.scaleName;
+                    delete currentScale.variablesSectionName;
+                    delete currentScale.comparePalettes;
+                    const activePalette = comparePalettes.palettes.find(p => p.isActive) || comparePalettes.palettes[0];
+                    if (activePalette) activePalette.scale = currentScale;
+                }
+
+                // Remove UI-specific properties from currentScale (defensive)
                 delete currentScale.scaleName;
                 delete currentScale.variablesSectionName;
 
                 // Restore UI elements
                 document.getElementById('baseColor').value = currentScale.baseColor;
                 document.getElementById('baseColorHex').value = currentScale.baseColor;
+                // Sync the canvas base-color picker (internal currentColor + hue/square
+                // handle positions) to the restored base color. Pass false so this
+                // does not itself write to the color scale or history.
+                if (typeof window.updateBaseColorPicker === 'function') {
+                    window.updateBaseColorPicker(currentScale.baseColor, false);
+                }
                 document.getElementById('customSteps').value = currentScale.customSteps;
                 document.getElementById('scaleName').value = snapshot.scaleName || 'primary';
                 document.getElementById('variablesSectionName').value = snapshot.variablesSectionName || 'Colors';
@@ -11003,7 +11197,8 @@
 
                 // Restore active tab
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelector(`.tab[data-view="${currentScale.mode}"]`).classList.add('active');
+                const activeTab = document.querySelector(`.tab[data-view="${currentScale.mode}"]`);
+                if (activeTab) activeTab.classList.add('active');
 
                 // Show/hide appropriate sections
                 document.getElementById('slidersWrapper').classList.toggle('hidden', currentScale.mode !== 'properties');
@@ -11013,10 +11208,13 @@
 
                 // Restore format switcher
                 document.querySelectorAll('.format-option').forEach(o => o.classList.remove('active'));
-                document.querySelector(`.format-option[data-format="${currentScale.colorFormat}"]`).classList.add('active');
+                const activeFormat = document.querySelector(`.format-option[data-format="${currentScale.colorFormat}"]`);
+                if (activeFormat) activeFormat.classList.add('active');
 
-                // Restore output format
-                document.querySelector(`input[value="${currentScale.outputFormat}"]`).checked = true;
+                // Restore output format (scope to the radio group to avoid matching stray inputs)
+                const outputFormatInput = document.querySelector(`input[name="outputFormat"][value="${currentScale.outputFormat}"]`)
+                    || document.querySelector(`input[value="${currentScale.outputFormat}"]`);
+                if (outputFormatInput) outputFormatInput.checked = true;
 
                 // Restore frame options
                 document.getElementById('showHSL').checked = currentScale.frameOptions.showHSL;
@@ -11055,17 +11253,54 @@
                     }
                 }
 
+                // Canonical UI sync from the scale. Covers mode-specific slider
+                // inputs plus manual-mode UI (Manual tabs, manualWrapper, manual
+                // toggle, manual slider labels/handles) that the inline restore
+                // above does not handle. Safe under isApplyingHistory (it doesn't
+                // call saveStateToHistory during execution).
+                updateAllControlsFromScale();
+                // Refresh manual-mode slider value labels (updateManualLabels is not
+                // in scope here, so update the elements directly).
+                if (currentScale.manualAdjustments) {
+                    const mh = document.getElementById('manual-h-value');
+                    const ms = document.getElementById('manual-s-value');
+                    const ml = document.getElementById('manual-l-value');
+                    if (mh) mh.textContent = `${(currentScale.manualAdjustments.h | 0)}°`;
+                    if (ms) ms.textContent = `${(currentScale.manualAdjustments.s | 0)}%`;
+                    if (ml) ml.textContent = `${(currentScale.manualAdjustments.l | 0)}%`;
+                }
+
                 // Update all visuals
                 updateAllVisuals();
                 updateOutputOptionsVisibility();
+
+                // Rebuild the compare cards + previews so add/remove/copy and
+                // per-card swatch edits are reflected after undo/redo.
+                renderComparePalettes();
+                updateAllComparePreviews();
+                updatePluginWidth();
 
             } finally {
                 isApplyingHistory = false;
             }
         }
 
+        // Flush any pending debounced work that would otherwise checkpoint the
+        // current edit *after* an undo/redo runs. Without this, undo can jump
+        // past in-progress edits (they were never committed to history yet) and
+        // the timer later pushes a stale/duplicate entry.
+        function flushPendingHistory() {
+            if (typeof debouncedUpdateVisuals !== 'undefined' && debouncedUpdateVisuals.flush) {
+                debouncedUpdateVisuals.flush();
+            }
+            if (typeof debouncedSyncPaletteNames !== 'undefined' && debouncedSyncPaletteNames.flush) {
+                debouncedSyncPaletteNames.flush();
+            }
+        }
+
         // Perform undo
         function performUndo() {
+            flushPendingHistory();
             if (historyIndex > 0) {
                 historyIndex--;
                 const snapshot = historyStack[historyIndex];
@@ -11076,6 +11311,7 @@
 
         // Perform redo
         function performRedo() {
+            flushPendingHistory();
             if (historyIndex < historyStack.length - 1) {
                 historyIndex++;
                 const snapshot = historyStack[historyIndex];
@@ -11360,6 +11596,8 @@
                     renderComparePalettes();
                     updateAllComparePreviews();
                     updatePluginWidth();
+
+                    saveStateToHistory();
                 }
             } else if (type === 'variables-metadata-loaded') {
                 // collections: [{id, name}], groupsByCollectionId: { [id]: string[] }, variablesByCollectionId: { [id]: variable[] }
