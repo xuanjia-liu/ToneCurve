@@ -1879,6 +1879,8 @@
             flex: 1;
             min-height: 0;
             padding-bottom: 4px;
+            /* Keep last card clear of the floating add button */
+            padding-right: 40px;
             position: relative;
         }
 
@@ -1913,6 +1915,7 @@
             box-shadow: 0 0 0 1px var(--border-color-dark);
             transition: all 0.2s ease;
             position: relative;
+            cursor: pointer;
         }
 
         .compare-card.active {
@@ -1923,17 +1926,24 @@
 
 
         /* Single palette mode - fill the panel */
+        .palette-preview-container.single-palette {
+            padding-right: 0;
+        }
+
         .palette-preview-container.single-palette .compare-card {
-            min-width: 100%;
-            max-width: 100%;
+            min-width: 0;
+            max-width: none;
+            width: 100%;
+            flex: 1;
             box-shadow: 0 0 0 1px var(--border-color-dark);
             border-radius: var(--border-radius-md);
         }
 
         .palette-preview-container.single-palette .compare-card.active {
             box-shadow: 0 0 0 1px var(--border-color-dark);
-            min-width: 100%;
-            max-width: 100%;
+            min-width: 0;
+            max-width: none;
+            width: 100%;
         }
 
         .palette-preview-container.single-palette .compare-card.active .swatch-text {
@@ -4289,8 +4299,8 @@
             </div>
 
 
-            <div class="palette-preview-container" id="compareContainer">
-                <div class="compare-card active" id="defaultCompareCard">
+            <div class="palette-preview-container single-palette" id="compareContainer">
+                <div class="compare-card active" id="defaultCompareCard" data-palette-id="default">
                     <div class="compare-card-header">
                         <div class="compare-card-title" id="defaultCardTitle">Primary</div>
                         <div class="compare-card-actions">
@@ -5996,13 +6006,28 @@
                 });
             }
 
-            // Add click handler for default compare card
-            const defaultCompareCard = document.getElementById('defaultCompareCard');
-            if (defaultCompareCard) {
-                defaultCompareCard.addEventListener('click', () => {
-                    const defaultPalette = comparePalettes.palettes.find(p => p.id === 'default');
-                    if (defaultPalette && !defaultPalette.isActive) {
-                        setActivePalette('default');
+            // Activate compare cards via delegation so handlers never close over
+            // stale palette objects (undo/redo replaces comparePalettes.palettes).
+            const compareContainer = document.getElementById('compareContainer');
+            if (compareContainer) {
+                compareContainer.addEventListener('click', (e) => {
+                    if (e.target.closest('.compare-card-btn')) return;
+                    if (e.target.closest('.palette-actions')) return;
+                    if (e.target.closest('.colorblind-simulation-card')) return;
+
+                    const card = e.target.closest('.compare-card');
+                    if (!card || !compareContainer.contains(card)) return;
+
+                    const paletteId = card.dataset.paletteId
+                        || (card.id === 'defaultCompareCard' ? 'default' : card.id.replace(/^compareCard_/, ''));
+                    const palette = comparePalettes.palettes.find(p => p.id === paletteId);
+                    if (!palette) return;
+
+                    // Allow in-place title editing only on the already-active card
+                    if (e.target.closest('.compare-card-title') && palette.isActive) return;
+
+                    if (!palette.isActive) {
+                        setActivePalette(palette.id);
                     }
                 });
             }
@@ -7728,21 +7753,24 @@
                 autoAdjustBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24">
         <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.666 5.333 12 2m0 0 3.333 3.333M12 2v6.778m3.333 9.889L12 22m0 0-3.334-3.333M12 22v-6.778M6 12h12"/>
             </svg>`;
-                autoAdjustBtn.title = 'Auto adjust other colors to blend with this one';
+                autoAdjustBtn.title = 'Auto adjust other colors to blend with this one (right-click for options)';
+                autoAdjustBtn.addEventListener('mouseenter', () => { showAutoAdjustPreview(swatch, color, currentScale); });
+                autoAdjustBtn.addEventListener('mouseleave', () => { clearAutoAdjustPreview(); });
+                autoAdjustBtn.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); openAutoAdjustOptions(autoAdjustBtn); });
                 autoAdjustBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    clearAutoAdjustPreview();
+                    // Capture pre-edit reference colors BEFORE switching to Manual mode
+                    const preCurrent = generateColorScale();
+                    const preBaseline = generateBaselineColorScale();
+                    const editedIndex = preCurrent.findIndex(c => c.step === color.step);
+                    if (editedIndex === -1) return;
                     // Ensure Manual mode whenever auto-adjust is used
                     enterManualModeFromCurrentDisplay();
-                    // Get all current colors
-                    const allColors = generateColorScale();
-                    const editedIndex = allColors.findIndex(c => c.step === color.step);
-
-                    if (editedIndex !== -1) {
-                        autoAdjustOtherColors(allColors, editedIndex, color.hex);
-                        updateAllVisuals();
-                        saveStateToHistory();
-                        showCopyFeedback(swatch, 'Colors auto-adjusted!');
-                    }
+                    autoAdjustOtherColors(editedIndex, autoAdjustConfig, preCurrent.map(c => c.hex), preBaseline.map(c => c.hex));
+                    updateAllVisuals();
+                    saveStateToHistory();
+                    showCopyFeedback(swatch, 'Colors auto-adjusted!');
                 });
                 actionsContainer.appendChild(autoAdjustBtn);
 
@@ -8826,6 +8854,7 @@
                 if (existingCard) {
                     // Update existing card
                     existingCard.className = `compare-card ${palette.isActive ? 'active' : ''}`;
+                    existingCard.dataset.paletteId = palette.id;
                     const title = existingCard.querySelector('.compare-card-title');
                     if (title) {
                         title.textContent = palette.title;
@@ -8841,9 +8870,11 @@
         }
 
         function createCompareCard(palette) {
+            const paletteId = palette.id;
             const card = document.createElement('div');
             card.className = `compare-card ${palette.isActive ? 'active' : ''}`;
-            card.id = palette.id === 'default' ? 'defaultCompareCard' : `compareCard_${palette.id}`;
+            card.id = paletteId === 'default' ? 'defaultCompareCard' : `compareCard_${paletteId}`;
+            card.dataset.paletteId = paletteId;
 
             // Create header
             const header = document.createElement('div');
@@ -8853,14 +8884,17 @@
             title.className = 'compare-card-title';
             title.textContent = palette.title;
             title.contentEditable = true;
-            title.id = palette.id === 'default' ? 'defaultCardTitle' : `compareCardTitle_${palette.id}`;
+            title.id = paletteId === 'default' ? 'defaultCardTitle' : `compareCardTitle_${paletteId}`;
             title.addEventListener('blur', () => {
-                const newTitle = title.textContent || palette.title;
-                palette.title = newTitle;
-                palette.scale.name = newTitle;
+                // Look up by id — palette objects are replaced on undo/redo
+                const current = comparePalettes.palettes.find(p => p.id === paletteId);
+                if (!current) return;
+                const newTitle = title.textContent || current.title;
+                current.title = newTitle;
+                current.scale.name = newTitle;
 
                 // If this is the active palette, update the left panel input
-                if (palette.isActive) {
+                if (current.isActive) {
                     const scaleNameInput = document.getElementById('scaleName');
                     if (scaleNameInput) {
                         scaleNameInput.value = newTitle;
@@ -8875,7 +8909,12 @@
                 e.stopPropagation(); // Prevent triggering card click when editing
             });
             title.addEventListener('click', (e) => {
-                e.stopPropagation(); // Prevent triggering card click when clicking to edit
+                // Only trap the click for editing when this palette is already active.
+                // Inactive titles should bubble so the card can be activated.
+                const current = comparePalettes.palettes.find(p => p.id === paletteId);
+                if (current && current.isActive) {
+                    e.stopPropagation();
+                }
             });
 
             const actions = document.createElement('div');
@@ -8889,7 +8928,7 @@
             copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12" aria-hidden="true"><path d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"/></svg>';
             copyBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                copyCompareCard(palette.id);
+                copyCompareCard(paletteId);
             });
 
             // Delete button (hide for default and when it's the only palette)
@@ -8898,10 +8937,10 @@
             deleteBtn.title = 'Delete palette';
             deleteBtn.setAttribute('aria-label', 'Delete palette');
             deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>';
-            deleteBtn.style.display = (palette.id === 'default' || comparePalettes.palettes.length <= 1) ? 'none' : 'block';
+            deleteBtn.style.display = (paletteId === 'default' || comparePalettes.palettes.length <= 1) ? 'none' : 'block';
             deleteBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                deleteCompareCard(palette.id);
+                deleteCompareCard(paletteId);
             });
 
             actions.appendChild(copyBtn);
@@ -8913,14 +8952,9 @@
             // Create preview
             const preview = document.createElement('div');
             preview.className = 'palette-preview';
-            preview.id = palette.id === 'default' ? 'palettePreview' : `palettePreview_${palette.id}`;
+            preview.id = paletteId === 'default' ? 'palettePreview' : `palettePreview_${paletteId}`;
 
-            // Add click handler to make this palette active
-            card.addEventListener('click', () => {
-                if (!palette.isActive) {
-                    setActivePalette(palette.id);
-                }
-            });
+            // Card activation is handled by delegated click on #compareContainer
 
             card.appendChild(header);
             card.appendChild(preview);
@@ -8978,25 +9012,28 @@
                     autoAdjustBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24">
         <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.666 5.333 12 2m0 0 3.333 3.333M12 2v6.778m3.333 9.889L12 22m0 0-3.334-3.333M12 22v-6.778M6 12h12"/>
             </svg>`;
-                    autoAdjustBtn.title = 'Auto adjust other colors to blend with this one';
+                    autoAdjustBtn.title = 'Auto adjust other colors to blend with this one (right-click for options)';
+                    autoAdjustBtn.addEventListener('mouseenter', () => { showAutoAdjustPreview(swatch, color, palette.scale); });
+                    autoAdjustBtn.addEventListener('mouseleave', () => { clearAutoAdjustPreview(); });
+                    autoAdjustBtn.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); openAutoAdjustOptions(autoAdjustBtn); });
                     autoAdjustBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
+                        clearAutoAdjustPreview();
                         // Ensure this palette is active for editing
                         if (!palette.isActive) {
                             setActivePalette(palette.id);
                         }
+                        // Capture pre-edit reference colors BEFORE switching to Manual mode
+                        const preCurrent = generateColorScale();
+                        const preBaseline = generateBaselineColorScale();
+                        const editedIndex = preCurrent.findIndex(c => c.step === color.step);
+                        if (editedIndex === -1) return;
                         // Enter manual mode for the active palette
                         enterManualModeFromCurrentDisplay();
-                        // Get all current colors
-                        const allColors = generateColorScaleFromScale(palette.scale);
-                        const editedIndex = allColors.findIndex(c => c.step === color.step);
-
-                        if (editedIndex !== -1) {
-                            autoAdjustOtherColors(allColors, editedIndex, color.hex);
-                            updateAllComparePreviews();
-                            saveStateToHistory();
-                            showCopyFeedback(swatch, 'Colors auto-adjusted!');
-                        }
+                        autoAdjustOtherColors(editedIndex, autoAdjustConfig, preCurrent.map(c => c.hex), preBaseline.map(c => c.hex));
+                        updateAllComparePreviews();
+                        saveStateToHistory();
+                        showCopyFeedback(swatch, 'Colors auto-adjusted!');
                     });
                     actionsContainer.appendChild(autoAdjustBtn);
 
@@ -9215,6 +9252,12 @@
             comparePalettes.palettes.forEach(palette => {
                 updateCompareCardPreview(palette);
             });
+            // Push output when auto-update is on. This is the render path used by
+            // all swatch actions (blend, reset, lock), so triggering here keeps
+            // them consistent with slider/curve edits. Debounced + guarded by
+            // liveEditingEnabled, so redundant calls (e.g. from updateAllVisuals)
+            // and calls during load are harmless.
+            generateOutputIfAutoUpdateEnabled();
         }
 
         function updatePluginWidth() {
@@ -10355,99 +10398,384 @@
             }
         }
 
-        // Auto adjust by treating all edited swatches as anchors (including the clicked one)
-        // Perform piecewise OKLCH interpolation between anchors while keeping anchors unchanged
-        function autoAdjustOtherColors(allColors, editedIndex, newHex) {
-            // Manual mode: adjust manualBaseColors so batch deltas still apply correctly
-            if (currentScale.manualModeActive) {
-                const steps = getStepsArray();
-                const total = steps.length;
-                if (total <= 1) return;
-                // Map baseline palette for fallback
-                const baseline = generateBaselineColorScale();
-                const baseMap = {};
-                baseline.forEach(c => { baseMap[c.step] = c.hex; });
-                // Build anchor indices from anchorSteps
-                const anchorIndices = [];
-                for (let i = 0; i < total; i++) {
-                    const s = steps[i];
-                    if (currentScale.anchorSteps[s]) anchorIndices.push(i);
+        // ============================================================
+        //  AUTO-ADJUST ENGINE
+        //  Two methods:
+        //    - 'blend'         : delta propagation. The edited color's OKLCH
+        //                        delta (vs its pre-edit baseline) is applied to
+        //                        neighbours with a smooth falloff that reaches 0
+        //                        at the nearest locked anchor / palette end.
+        //                        Preserves the existing curve shape. (idea #1)
+        //    - 'reinterpolate' : smooth Catmull-Rom spline through the held
+        //                        anchors (locked + edited + endpoints). (idea #3)
+        //  Both honour "preserve lightness" (idea #2) and route every result
+        //  through chroma-reducing gamut mapping + an achromatic-hue rule (#4).
+        // ============================================================
+        const AUTO_ADJUST_ACHROMATIC_C = 0.01; // OKLCH chroma below this => hue is undefined
+
+        let autoAdjustConfig = {
+            method: 'blend',           // 'blend' | 'reinterpolate'
+            preserveLightness: false   // keep each step's original OKLCH lightness (protects contrast)
+        };
+
+        function saveAutoAdjustConfig() {
+            try { localStorage.setItem('toneCurveAutoAdjust', JSON.stringify(autoAdjustConfig)); } catch (e) { /* noop */ }
+        }
+        function loadAutoAdjustConfig() {
+            try {
+                const s = localStorage.getItem('toneCurveAutoAdjust');
+                if (s) {
+                    const parsed = JSON.parse(s);
+                    if (parsed && typeof parsed === 'object') Object.assign(autoAdjustConfig, parsed);
                 }
-                // Boundaries as soft anchors
-                if (!anchorIndices.includes(0)) anchorIndices.unshift(0);
-                if (!anchorIndices.includes(total - 1)) anchorIndices.push(total - 1);
-                const uniqueAnchors = Array.from(new Set(anchorIndices)).sort((a, b) => a - b);
-                const anchorSet = new Set(uniqueAnchors);
-                // Helper to get base for index
-                function hexAtIndex(idx) {
-                    const step = steps[idx];
-                    return (currentScale.manualBaseColors && currentScale.manualBaseColors[step]) || baseMap[step];
-                }
-                // Interpolate OKLCH between anchors and write into manualBaseColors for in-betweens
-                for (let k = 0; k < uniqueAnchors.length - 1; k++) {
-                    const a = uniqueAnchors[k];
-                    const b = uniqueAnchors[k + 1];
-                    if (b <= a + 1) continue;
-                    const aOK = hexToOklch(hexAtIndex(a));
-                    const bOK = hexToOklch(hexAtIndex(b));
-                    const span = b - a;
-                    for (let i = a + 1; i < b; i++) {
-                        const step = steps[i];
-                        if (anchorSet.has(i) && currentScale.anchorSteps[step]) continue;
-                        const t = (i - a) / span;
-                        const l = lerp(aOK[0], bOK[0], t);
-                        const c = lerp(aOK[1], bOK[1], t);
-                        const h = lerpHue(aOK[2], bOK[2], t);
-                        const hex = oklchToHex(l, c, h, 1);
-                        currentScale.manualBaseColors[step] = hex;
+            } catch (e) { /* noop */ }
+        }
+        loadAutoAdjustConfig();
+
+        function smoothstep(t) {
+            t = Math.max(0, Math.min(1, t));
+            return t * t * (3 - 2 * t);
+        }
+
+        // Shortest signed hue delta from a -> b, in degrees (-180..180]
+        function hueDeltaSigned(a, b) {
+            return ((b - a + 540) % 360) - 180;
+        }
+
+        // Uniform Catmull-Rom evaluated over (possibly non-uniform) sample positions xs.
+        // Returns the value at position x (clamped to the endpoints).
+        function catmullRomAt(xs, ys, x) {
+            const n = xs.length;
+            if (n === 1) return ys[0];
+            if (x <= xs[0]) return ys[0];
+            if (x >= xs[n - 1]) return ys[n - 1];
+            let k = 0;
+            while (k < n - 1 && xs[k + 1] < x) k++;
+            const p0 = ys[k];
+            const p1 = ys[k + 1];
+            const pPrev = ys[k - 1 >= 0 ? k - 1 : 0];
+            const pNext = ys[k + 2 <= n - 1 ? k + 2 : n - 1];
+            const t = (x - xs[k]) / (xs[k + 1] - xs[k]);
+            const t2 = t * t;
+            const t3 = t2 * t;
+            return 0.5 * (
+                (2 * p0) +
+                (-pPrev + p1) * t +
+                (2 * pPrev - 5 * p0 + 4 * p1 - pNext) * t2 +
+                (-pPrev + 3 * p0 - 3 * p1 + pNext) * t3
+            );
+        }
+
+        // ---- OKLCH -> sRGB gamut helpers (idea #4) ----
+        function oklchToLinearSrgb(l, c, h) {
+            const hRad = h * Math.PI / 180;
+            const A = c * Math.cos(hRad);
+            const B = c * Math.sin(hRad);
+            const l_ = l + 0.3963377774 * A + 0.2158037573 * B;
+            const m_ = l - 0.1055613458 * A - 0.0638541728 * B;
+            const s_ = l - 0.0894841775 * A - 1.2914855480 * B;
+            const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+            return [
+                +4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+                -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+                -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
+            ];
+        }
+        function isOklchInGamut(l, c, h, eps = 0.0008) {
+            const [r, g, b] = oklchToLinearSrgb(l, c, h);
+            return r >= -eps && r <= 1 + eps && g >= -eps && g <= 1 + eps && b >= -eps && b <= 1 + eps;
+        }
+        // Bring an OKLCH colour into sRGB by reducing chroma only (keeps L and H),
+        // matching the CSS Color 4 / culori approach instead of naive channel clamping.
+        function gamutMapOklchToHex(l, c, h) {
+            l = Math.max(0, Math.min(1, l));
+            c = Math.max(0, c);
+            if (c === 0 || isOklchInGamut(l, c, h)) return oklchToHex(l, c, h, 1);
+            let lo = 0, hi = c;
+            for (let i = 0; i < 24; i++) {
+                const mid = (lo + hi) / 2;
+                if (isOklchInGamut(l, mid, h)) lo = mid; else hi = mid;
+            }
+            return oklchToHex(l, lo, h, 1);
+        }
+
+        // Pure engine. Given the working colours, the pre-edit baseline colours,
+        // the held-anchor indices and the edited index, returns a new hex[] of
+        // the same length. Never mutates state (used by both preview and commit).
+        function computeAutoAdjustHexes(currentHexes, baselineHexes, anchorIdx, editedIndex, config) {
+            const n = currentHexes.length;
+            if (n <= 1) return currentHexes.slice();
+            config = config || autoAdjustConfig;
+            const preserveL = !!config.preserveLightness;
+
+            const curOK = currentHexes.map(hexToOklch);
+            const baseOK = baselineHexes.map(hexToOklch);
+
+            const held = new Set(anchorIdx);
+            held.add(editedIndex);
+
+            const result = currentHexes.slice();
+
+            if (config.method === 'reinterpolate') {
+                // Smooth Catmull-Rom spline through held anchors + endpoints.
+                const anchorSet = new Set(held);
+                anchorSet.add(0);
+                anchorSet.add(n - 1);
+                const idxs = Array.from(anchorSet).sort((a, b) => a - b);
+
+                const Ls = idxs.map(i => curOK[i][0]);
+                const Cs = idxs.map(i => curOK[i][1]);
+                const Hs = idxs.map(i => curOK[i][2]);
+
+                // Achromatic-hue rule: replace undefined (near-gray) anchor hues
+                // with the nearest chromatic anchor hue before splining (#4).
+                for (let j = 0; j < idxs.length; j++) {
+                    if (curOK[idxs[j]][1] < AUTO_ADJUST_ACHROMATIC_C) {
+                        for (let d = 1; d < idxs.length; d++) {
+                            const left = j - d, right = j + d;
+                            if (left >= 0 && curOK[idxs[left]][1] >= AUTO_ADJUST_ACHROMATIC_C) { Hs[j] = curOK[idxs[left]][2]; break; }
+                            if (right < idxs.length && curOK[idxs[right]][1] >= AUTO_ADJUST_ACHROMATIC_C) { Hs[j] = curOK[idxs[right]][2]; break; }
+                        }
                     }
                 }
-                return;
+                // Unwrap hue so the spline takes the short way round the wheel.
+                for (let j = 1; j < Hs.length; j++) {
+                    const d = Hs[j] - Hs[j - 1];
+                    if (d > 180) Hs[j] -= 360;
+                    else if (d < -180) Hs[j] += 360;
+                }
+
+                for (let i = 0; i < n; i++) {
+                    if (held.has(i)) { result[i] = currentHexes[i]; continue; }
+                    let L = catmullRomAt(idxs, Ls, i);
+                    let C = Math.max(0, catmullRomAt(idxs, Cs, i));
+                    let H = catmullRomAt(idxs, Hs, i);
+                    if (preserveL) L = curOK[i][0];
+                    H = ((H % 360) + 360) % 360;
+                    result[i] = gamutMapOklchToHex(L, C, H);
+                }
+                return result;
             }
 
-            // Default (non-manual) behavior: operate on customColors
-            const totalColors = allColors.length;
-            if (totalColors <= 1) return;
+            // ---- Default: 'blend' delta propagation (#1) ----
+            // Segmentation boundaries so propagation stops at locks and palette ends.
+            const segSet = new Set(held);
+            segSet.add(0);
+            segSet.add(n - 1);
+            const segList = Array.from(segSet).sort((a, b) => a - b);
 
-            // Collect anchor indices: steps marked as manual anchors
-            const anchorIndices = [];
-            for (let i = 0; i < totalColors; i++) {
-                const step = allColors[i].step;
-                if (currentScale.anchorSteps[step]) {
-                    anchorIndices.push(i);
+            const dL = curOK[editedIndex][0] - baseOK[editedIndex][0];
+            const dC = curOK[editedIndex][1] - baseOK[editedIndex][1];
+            let dH = 0;
+            if (curOK[editedIndex][1] >= AUTO_ADJUST_ACHROMATIC_C && baseOK[editedIndex][1] >= AUTO_ADJUST_ACHROMATIC_C) {
+                dH = hueDeltaSigned(baseOK[editedIndex][2], curOK[editedIndex][2]);
+            }
+
+            // No delta to propagate (swatch untouched, or re-click after a
+            // previous blend was committed): fall back to smooth
+            // re-interpolation through this swatch + locked anchors so the
+            // button always has a useful effect.
+            const noDelta = Math.abs(dL) < 0.002 && Math.abs(dC) < 0.002 && Math.abs(dH) < 0.5;
+            if (noDelta) {
+                return computeAutoAdjustHexes(
+                    currentHexes, baselineHexes, anchorIdx, editedIndex,
+                    Object.assign({}, config, { method: 'reinterpolate' })
+                );
+            }
+
+            for (let i = 0; i < n; i++) {
+                if (held.has(i)) { result[i] = currentHexes[i]; continue; }
+                // Find the segment [aL, aR] containing i.
+                let aL = 0, aR = n - 1;
+                for (let s = 0; s < segList.length - 1; s++) {
+                    if (segList[s] <= i && i <= segList[s + 1]) { aL = segList[s]; aR = segList[s + 1]; break; }
+                }
+                // Weight is non-zero only for the segment adjacent to the edited color.
+                let w = 0;
+                if (aR > aL) {
+                    if (editedIndex === aL) w = 1 - (i - aL) / (aR - aL);
+                    else if (editedIndex === aR) w = 1 - (aR - i) / (aR - aL);
+                }
+                w = smoothstep(w);
+                if (w === 0) { result[i] = currentHexes[i]; continue; }
+
+                // Neighbours are shifted from their *current* colors. Never
+                // fall back to the baseline here: after a blend is committed the
+                // baseline reference is stale, and rebuilding from it would
+                // revert the previous blend (the "toggle back" bug).
+                const L = curOK[i][0] + (preserveL ? 0 : w * dL);
+                const C = Math.max(0, curOK[i][1] + w * dC);
+                let H = curOK[i][2];
+                if (dH !== 0 && curOK[i][1] >= AUTO_ADJUST_ACHROMATIC_C) {
+                    H = ((curOK[i][2] + w * dH) % 360 + 360) % 360;
+                }
+                result[i] = gamutMapOklchToHex(L, C, H);
+            }
+            return result;
+        }
+
+        // Commit path: computes the blended scale and writes it into the active
+        // (manual-mode) scale. Callers must capture pre-edit reference colours
+        // BEFORE entering manual mode and pass them in.
+        function autoAdjustOtherColors(editedIndex, config, currentHexes, baselineHexes) {
+            const steps = getStepsArray();
+            const n = steps.length;
+            if (n <= 1) return;
+            config = config || autoAdjustConfig;
+
+            const anchorIdx = [];
+            for (let i = 0; i < n; i++) {
+                if (currentScale.anchorSteps && currentScale.anchorSteps[steps[i]]) anchorIdx.push(i);
+            }
+
+            const result = computeAutoAdjustHexes(currentHexes, baselineHexes, anchorIdx, editedIndex, config);
+
+            if (!currentScale.manualBaseColors) currentScale.manualBaseColors = {};
+            const held = new Set(anchorIdx);
+            held.add(editedIndex);
+            for (let i = 0; i < n; i++) {
+                const step = steps[i];
+                currentScale.manualBaseColors[step] = result[i];
+                // Clear stale per-step overrides on non-anchor steps so they are
+                // not later mistaken for locked colours.
+                if (!held.has(i) && currentScale.customColors) {
+                    delete currentScale.customColors[step];
                 }
             }
+        }
 
-            if (!anchorIndices.includes(0)) anchorIndices.unshift(0);
-            if (!anchorIndices.includes(totalColors - 1)) anchorIndices.push(totalColors - 1);
+        // Wrapper mirroring generateColorScaleFromScale for baseline generation.
+        function generateBaselineColorScaleFromScale(scale) {
+            const original = currentScale;
+            currentScale = scale;
+            let colors;
+            try { colors = generateBaselineColorScale(); } finally { currentScale = original; }
+            return colors;
+        }
 
-            const uniqueAnchors = Array.from(new Set(anchorIndices)).sort((a, b) => a - b);
-            const anchorSet = new Set(uniqueAnchors);
+        // ---- Hover preview (idea #6) ----
+        let _autoAdjustPreviewEls = null;
 
-            function hexAt(index) {
-                const step = allColors[index].step;
-                return currentScale.customColors[step] || allColors[index].hex;
+        function _paintSwatchPreview(swatchEl, hex) {
+            if (!swatchEl._aaOrig) {
+                const txt = swatchEl.querySelector('.swatch-text');
+                swatchEl._aaOrig = {
+                    bg: swatchEl.style.background,
+                    txtColor: txt ? txt.style.color : null,
+                    txtHtml: txt ? txt.innerHTML : null
+                };
             }
-
-            for (let k = 0; k < uniqueAnchors.length - 1; k++) {
-                const a = uniqueAnchors[k];
-                const b = uniqueAnchors[k + 1];
-                if (b <= a + 1) continue;
-
-                const aOK = hexToOklch(hexAt(a));
-                const bOK = hexToOklch(hexAt(b));
-                const span = b - a;
-
-                for (let i = a + 1; i < b; i++) {
-                    if (anchorSet.has(i) && currentScale.anchorSteps[allColors[i].step]) continue;
-                    const t = (i - a) / span;
-                    const l = lerp(aOK[0], bOK[0], t);
-                    const c = lerp(aOK[1], bOK[1], t);
-                    const h = lerpHue(aOK[2], bOK[2], t);
-                    const hex = oklchToHex(l, c, h, 1);
-                    currentScale.customColors[allColors[i].step] = hex;
-                }
+            swatchEl.style.background = hex;
+            swatchEl.style.outline = '2px dashed rgba(255,255,255,0.55)';
+            swatchEl.style.outlineOffset = '-2px';
+            const txt = swatchEl.querySelector('.swatch-text');
+            if (txt) {
+                txt.style.color = getContrastingTextColor(hex);
+                txt.innerHTML = txt.innerHTML.replace(/#([0-9A-Fa-f]{3,8})\b/, hex);
             }
+        }
+        function _restoreSwatchPreview(swatchEl) {
+            const o = swatchEl._aaOrig;
+            if (!o) return;
+            swatchEl.style.background = o.bg;
+            swatchEl.style.outline = '';
+            swatchEl.style.outlineOffset = '';
+            const txt = swatchEl.querySelector('.swatch-text');
+            if (txt) {
+                if (o.txtColor != null) txt.style.color = o.txtColor;
+                if (o.txtHtml != null) txt.innerHTML = o.txtHtml;
+            }
+            delete swatchEl._aaOrig;
+        }
+        function showAutoAdjustPreview(swatch, color, scale) {
+            try {
+                scale = scale || currentScale;
+                const isActive = (scale === currentScale);
+                const current = isActive ? generateColorScale() : generateColorScaleFromScale(scale);
+                const baseline = isActive ? generateBaselineColorScale() : generateBaselineColorScaleFromScale(scale);
+                const editedIndex = current.findIndex(c => c.step === color.step);
+                if (editedIndex === -1) return;
+                const steps = current.map(c => c.step);
+                const anchorIdx = [];
+                steps.forEach((s, i) => { if (scale.anchorSteps && scale.anchorSteps[s]) anchorIdx.push(i); });
+                const result = computeAutoAdjustHexes(current.map(c => c.hex), baseline.map(c => c.hex), anchorIdx, editedIndex, autoAdjustConfig);
+                const container = swatch.parentElement;
+                if (!container) return;
+                clearAutoAdjustPreview();
+                _autoAdjustPreviewEls = [];
+                container.querySelectorAll('.palette-swatch').forEach(el => {
+                    const stepAttr = el.getAttribute('data-step');
+                    const idx = steps.findIndex(s => String(s) === String(stepAttr));
+                    if (idx === -1) return;
+                    if (result[idx] && result[idx].toUpperCase() !== current[idx].hex.toUpperCase()) {
+                        _paintSwatchPreview(el, result[idx]);
+                        _autoAdjustPreviewEls.push(el);
+                    }
+                });
+            } catch (e) { /* preview must never break the UI */ }
+        }
+        function clearAutoAdjustPreview() {
+            if (_autoAdjustPreviewEls) {
+                _autoAdjustPreviewEls.forEach(_restoreSwatchPreview);
+                _autoAdjustPreviewEls = null;
+            }
+        }
+
+        // ---- Options popover (right-click on the auto-adjust button) ----
+        let _autoAdjustOptionsEl = null;
+        function _autoAdjustOutside(e) {
+            if (_autoAdjustOptionsEl && !_autoAdjustOptionsEl.contains(e.target)) closeAutoAdjustOptions();
+        }
+        function closeAutoAdjustOptions() {
+            if (_autoAdjustOptionsEl) {
+                _autoAdjustOptionsEl.remove();
+                _autoAdjustOptionsEl = null;
+                document.removeEventListener('mousedown', _autoAdjustOutside, true);
+            }
+        }
+        function openAutoAdjustOptions(anchorEl) {
+            closeAutoAdjustOptions();
+            const pop = document.createElement('div');
+            pop.style.cssText = 'position:fixed;z-index:100000;background:#1e1e1e;color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px 12px;width:236px;box-shadow:0 8px 24px rgba(0,0,0,0.45);font-size:12px;line-height:1.4;';
+            pop.innerHTML = `
+                <div style="font-weight:600;margin-bottom:8px;">Auto-adjust options</div>
+                <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;cursor:pointer;">
+                    <input type="radio" name="aa-method" value="blend" style="margin-top:2px;">
+                    <span><b>Blend</b><br><span style="opacity:.7;">Nudge neighbours toward this color</span></span>
+                </label>
+                <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;cursor:pointer;">
+                    <input type="radio" name="aa-method" value="reinterpolate" style="margin-top:2px;">
+                    <span><b>Smooth</b><br><span style="opacity:.7;">Re-interpolate a smooth curve</span></span>
+                </label>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
+                    <input type="checkbox" name="aa-preserveL">
+                    <span>Keep lightness <span style="opacity:.7;">(preserve contrast)</span></span>
+                </label>`;
+            document.body.appendChild(pop);
+
+            const rect = anchorEl.getBoundingClientRect();
+            let left = rect.left;
+            let top = rect.bottom + 6;
+            if (left + 244 > window.innerWidth) left = window.innerWidth - 244;
+            if (top + 150 > window.innerHeight) top = rect.top - 156;
+            pop.style.left = Math.max(8, left) + 'px';
+            pop.style.top = Math.max(8, top) + 'px';
+
+            pop.querySelectorAll('input[name="aa-method"]').forEach(r => {
+                r.checked = (r.value === autoAdjustConfig.method);
+                r.addEventListener('change', () => {
+                    if (r.checked) { autoAdjustConfig.method = r.value; saveAutoAdjustConfig(); }
+                });
+            });
+            const cb = pop.querySelector('input[name="aa-preserveL"]');
+            cb.checked = !!autoAdjustConfig.preserveLightness;
+            cb.addEventListener('change', () => {
+                autoAdjustConfig.preserveLightness = cb.checked;
+                saveAutoAdjustConfig();
+            });
+
+            _autoAdjustOptionsEl = pop;
+            setTimeout(() => document.addEventListener('mousedown', _autoAdjustOutside, true), 0);
         }
 
         // Blend two HSL colors with a given progress (0 = first color, 1 = second color)
